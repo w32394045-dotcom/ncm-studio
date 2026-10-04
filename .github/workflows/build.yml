@@ -45,7 +45,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       tag: ${{ steps.v.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
       - id: v
@@ -71,14 +71,14 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache: true
       # Pinned rather than relying on the runner's node: the front-end check is
       # part of what a release is gated on, so its version should not drift.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
       - name: gofmt
@@ -110,8 +110,8 @@ jobs:
     needs: [version, test]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache: true
@@ -193,7 +193,7 @@ jobs:
           sha256sum ncm-studio-* > checksums.txt
           cat checksums.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: binaries
           path: |
@@ -206,12 +206,12 @@ jobs:
     needs: [version, binaries]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: binaries
           path: dist
@@ -225,7 +225,7 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: bash packaging/check-linux-packages.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: linux-packages
           path: |
@@ -239,8 +239,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true
@@ -254,7 +254,7 @@ jobs:
         run: ls -lh dist
 
       - name: publish
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.version.outputs.tag }}
           name: ncm-studio ${{ needs.version.outputs.version }}
