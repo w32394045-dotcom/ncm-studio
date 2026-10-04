@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -55,6 +56,42 @@ func TestMinSizeDefaultsAndOptOut(t *testing.T) {
 	}
 	if got := st2.Config().MinSize; got.Enabled() {
 		t.Errorf("an explicit zero came back as %+v, want no filter", got)
+	}
+
+	// The same thing through the program's own writer, which is the shape the
+	// file really has: a settings object inside an envelope with the records
+	// beside it. Reading a setting has to look inside that member — looking at
+	// the envelope always answers "not set", which is the answer that means
+	// "use the default", and that is how a saved filter would quietly come back
+	// on at the next start.
+	live := filepath.Join(dir, "live")
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := Open(live, DefaultConfig("/home"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saved.Update(func(c *Config) {
+		c.MinSize = MinSize{Bytes: 7 << 20, Unit: SizeMB}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The envelope really is what is on disk, so this test is about the real
+	// file and not about a shape it made up.
+	raw, err := os.ReadFile(filepath.Join(live, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"config"`)) || !bytes.Contains(raw, []byte(`"records"`)) {
+		t.Fatalf("settings file is not the expected envelope: %s", raw)
+	}
+	back, err := Open(live, DefaultConfig("/home"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Config().MinSize; got != (MinSize{Bytes: 7 << 20, Unit: SizeMB}) {
+		t.Errorf("saved min size came back as %+v, want 7 MB", got)
 	}
 }
 
