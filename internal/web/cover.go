@@ -150,6 +150,12 @@ func (s *Server) handleCoverImage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data, mime = art.Data, art.MIME
+		// The current artwork gets a validator too, and that is not the same
+		// thing as caching it: an ETag lets the browser ask "still this one?"
+		// and take a 304, so a list of two hundred rows costs two hundred tiny
+		// requests instead of two hundred images after a reload. It is the
+		// digest of the bytes, so it changes the moment the cover does.
+		etag = cover.Digest(art.Data)
 	} else {
 		hash, err := tag.AudioFingerprint(path)
 		if err != nil {
