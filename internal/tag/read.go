@@ -41,9 +41,18 @@ type CoverArt struct {
 
 // flacBlock is one metadata block, payload only. The block header is rebuilt
 // when the chain is written back out.
+//
+// Size and At describe the payload as it sits in the file: Size is what the
+// header declares and At is where the payload starts. They are carried
+// separately from Data because a reader walking a chain it is not going to
+// rewrite does not need the bytes at all — the picture especially — and because
+// a writer that does need them can still stream them out of the source by At
+// and Size rather than holding a copy.
 type flacBlock struct {
 	Type byte
 	Data []byte
+	Size int
+	At   int64
 }
 
 // AudioOffset reports the container format and the byte offset where the audio
@@ -67,13 +76,14 @@ func AudioOffset(path string) (AudioFormat, int64, error) {
 
 	switch {
 	case len(head) >= 4 && string(head[:4]) == "fLaC":
-		blocks, _, _, err := readFLACBlocks(f)
+		// Only the block lengths matter here: the offset is the sum of them.
+		blocks, _, _, err := readFLACBlocks(f, false)
 		if err != nil {
 			return "", 0, err
 		}
 		var offset int64 = 4
 		for _, b := range blocks {
-			offset += 4 + int64(len(b.Data))
+			offset += 4 + int64(b.Size)
 		}
 		return FormatFLAC, offset, nil
 
@@ -150,7 +160,7 @@ func ReadCover(path string) (*CoverArt, error) {
 
 	switch {
 	case len(head) >= 4 && string(head[:4]) == "fLaC":
-		blocks, _, _, err := readFLACBlocks(f)
+		blocks, _, _, err := readFLACBlocks(f, true)
 		if err != nil {
 			return nil, err
 		}
@@ -180,7 +190,7 @@ func ReadMusicID(path string) int64 {
 
 	switch {
 	case len(head) >= 4 && string(head[:4]) == "fLaC":
-		blocks, _, _, err := readFLACBlocks(f)
+		blocks, _, _, err := readFLACBlocks(f, false)
 		if err != nil {
 			return 0
 		}
@@ -378,47 +388,91 @@ func indexByte(b []byte, c byte) int {
 
 // readFLACBlocks walks the metadata chain and returns every block.
 //
-// The chain is length-prefixed but has no total length, so it is buffered
-// progressively: the window doubles until the walk reaches the last block.
-func readFLACBlocks(f *os.File) ([]flacBlock, int, bool, error) {
-	window := 1 << 20
-	for {
-		// Rewound every time, not once before the loop: a retry that resumed
-		// where the last read stopped would hand the parser a slice of audio
-		// frames and be told the file is not a FLAC stream at all. The window
-		// only grows when a real chain did not fit, which is exactly the case a
-		// large embedded cover produces.
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return nil, 0, false, err
-		}
-		if window > maxMetadataBytes {
-			return nil, 0, false, errors.New("tag: FLAC metadata chain is implausibly large")
-		}
-		buf := make([]byte, window)
-		n, err := io.ReadFull(f, buf)
-		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-			return nil, 0, false, err
-		}
-		buf = buf[:n]
-
-		blocks, frameOffset, more, err := parseFLACBlocks(buf)
-		if err != nil {
-			return nil, 0, false, err
-		}
-		if !more {
-			return blocks, frameOffset, false, nil
-		}
-		window *= 4
+// The chain is length-prefixed but has no total length, so it is buffered in
+// one window sized from a header-only probe — see flacChainSize. Probing first
+// is what keeps a scan cheap: the previous version guessed a megabyte, and the
+// guessing showed up twice, as a megabyte of garbage per file read and as a
+// doubling retry on the files whose cover did not fit.
+//
+// wantPicture decides whether the PICTURE payload is buffered. Callers that
+// only need the chain's shape pass false and skip a multi-megabyte copy.
+func readFLACBlocks(f *os.File, wantPicture bool) ([]flacBlock, int, bool, error) {
+	size, ok := flacChainSize(f)
+	if !ok {
+		return nil, 0, false, errors.New("tag: FLAC metadata chain is implausibly large")
 	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, 0, false, err
+	}
+	buf := make([]byte, size)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return nil, 0, false, err
+	}
+	buf = buf[:n]
+
+	blocks, frameOffset, more, err := parseFLACBlocksInto(buf, wantPicture)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	if more {
+		// The window was sized from the same headers this walk reads, so this
+		// is a file that changed underneath us rather than a short read.
+		return nil, 0, false, errors.New("tag: FLAC metadata chain ended early")
+	}
+	return blocks, frameOffset, false, nil
+}
+
+// flacChainSize reports how many bytes the metadata chain occupies, reading
+// only its 4-byte block headers — the payloads are never touched. ok is false
+// when the chain is not a chain at all, or is longer than this program will
+// buffer.
+func flacChainSize(f *os.File) (int, bool) {
+	var sig [4]byte
+	if _, err := f.ReadAt(sig[:], 0); err != nil || string(sig[:]) != "fLaC" {
+		return 0, false
+	}
+	var (
+		pos    = 4
+		header [4]byte
+	)
+	for i := 0; i < maxMetadataBlocks; i++ {
+		if _, err := f.ReadAt(header[:], int64(pos)); err != nil {
+			return 0, false
+		}
+		length := int(header[1])<<16 | int(header[2])<<8 | int(header[3])
+		pos += 4 + length
+		if pos > maxMetadataBytes {
+			return 0, false
+		}
+		if header[0]&0x80 != 0 { // is-last
+			return pos, true
+		}
+	}
+	return 0, false
 }
 
 // parseFLACBlocks walks as much of the chain as buf holds. more=true means the
 // buffer ended first and the caller should retry with a larger window.
 func parseFLACBlocks(buf []byte) (blocks []flacBlock, frameOffset int, more bool, err error) {
+	return parseFLACBlocksInto(buf, true)
+}
+
+// parseFLACBlocksInto is parseFLACBlocks with control over the picture.
+//
+// A caller that only wants to know whether the file has artwork — the scan, the
+// info page, the cover editor's "is there one" — passes wantPicture=false and
+// the image is stepped over instead of copied. The image is the largest block
+// in the chain by an order of magnitude, so on a library of a few hundred
+// tracks that is the difference between reading a few kilobytes per file and
+// reading a few megabytes per file, and between a small allocation and a
+// multi-megabyte one.
+func parseFLACBlocksInto(buf []byte, wantPicture bool) (blocks []flacBlock, frameOffset int, more bool, err error) {
 	if len(buf) < 4 || string(buf[:4]) != "fLaC" {
 		return nil, 0, false, ErrNotFLAC
 	}
 	pos := 4
+	blocks = make([]flacBlock, 0, 8)
 	for range maxMetadataBlocks {
 		if pos+4 > len(buf) {
 			return nil, 0, true, nil
@@ -430,9 +484,13 @@ func parseFLACBlocks(buf []byte) (blocks []flacBlock, frameOffset int, more bool
 		if end > len(buf) {
 			return nil, 0, true, nil
 		}
-		payload := make([]byte, length)
-		copy(payload, buf[pos+4:end])
-		blocks = append(blocks, flacBlock{Type: header[0] & 0x7F, Data: payload})
+		blockType := header[0] & 0x7F
+		var payload []byte
+		if wantPicture || blockType != blockPicture {
+			payload = make([]byte, length)
+			copy(payload, buf[pos+4:end])
+		}
+		blocks = append(blocks, flacBlock{Type: blockType, Data: payload, Size: length, At: int64(pos + 4)})
 		pos = end
 		if isLast {
 			return blocks, pos, false, nil
