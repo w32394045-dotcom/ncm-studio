@@ -82,6 +82,9 @@ type lyricsServer struct {
 	cat *catalogue
 	// pool is the backfill pool behind /api/lyrics/*.
 	pool *job.Pool
+	// store is the settings and records behind the server, so a test can move
+	// a setting the way the settings page would.
+	store *store.Store
 }
 
 func newLyricsServer(t *testing.T, mode store.LyricsMode) lyricsServer {
@@ -129,7 +132,7 @@ func newLyricsServer(t *testing.T, mode store.LyricsMode) lyricsServer {
 		aiPool.Cancel()
 		srv.Close()
 	})
-	return lyricsServer{Server: srv, dir: dir, cat: cat, pool: pool}
+	return lyricsServer{Server: srv, dir: dir, cat: cat, pool: pool, store: st}
 }
 
 // track writes a FLAC carrying the given tags and returns its path.
