@@ -160,6 +160,20 @@ func patchKeys(raw json.RawMessage) map[string]bool {
 	return out
 }
 
+// configMember returns the settings object inside a saved settings file.
+//
+// The file on disk is an envelope — {"config":{…},"records":{…}} — and asking it
+// about a setting would always answer "absent", which is the answer that means
+// "use the default". Everything that inspects the saved settings has to go
+// through here so that cannot be got wrong twice.
+func configMember(data []byte) json.RawMessage {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil
+	}
+	return envelope["config"]
+}
+
 // decodeMinSize reads the size filter from one JSON value.
 //
 // It accepts both shapes a caller might send: the object the settings page
