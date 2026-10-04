@@ -7,6 +7,7 @@
 set -Eeuo pipefail
 
 VERSION="${1:?usage: release-notes.sh <version> <commit>}"
+VERSION="${VERSION#v}"
 COMMIT="${2:-}"
 DIST="${DIST:-dist}"
 v="${VERSION#v}"
