@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"ncm-studio/internal/store"
+	"ncm-studio/internal/tag"
 )
 
 // A scan has to leave out the files the size filter excludes and say why, and
@@ -100,7 +101,9 @@ func TestFilesHonoursTheMinimumSize(t *testing.T) {
 // default moves.
 func TestAudioListingMarksFilteredRowsUnwritable(t *testing.T) {
 	s := newLyricsServer(t, store.LyricsEmbed)
-	path := s.track(t, testSongName, nil)
+	// Empty tags rather than none: the fixture builder writes a Vorbis comment
+	// block, and a nil tag set is not a file with no tags but a nil dereference.
+	path := s.track(t, testSongName, &tag.Tags{})
 
 	// A minimum far below the fixture: the row must come back usable.
 	if err := s.store.Update(func(c *store.Config) {
