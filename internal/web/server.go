@@ -286,6 +286,11 @@ func decodeJSON(r *http.Request, v any) error {
 	return nil
 }
 
+// BuildCommit is the source revision this build came from, stamped at link time
+// and shown beside the version. It is a package variable rather than a
+// parameter so that a test does not have to name a commit it does not have.
+var BuildCommit string
+
 // stateResponse is everything the UI needs to render itself on load.
 type stateResponse struct {
 	Config  store.Config `json:"config"`
@@ -294,6 +299,9 @@ type stateResponse struct {
 	Workers int          `json:"workers"`
 	Home    string       `json:"home"`
 	Version string       `json:"version"`
+	// Commit is the revision the binary was built from, or "" for a build made
+	// by hand.
+	Commit string `json:"commit,omitempty"`
 	// ConfigDir is where the settings file lives, which is worth showing but is
 	// not the workspace: that is the user's, and holds the covers and caches.
 	ConfigDir string `json:"configDir"`
@@ -311,6 +319,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		Workers:          s.pool.Workers(),
 		Home:             home,
 		Version:          s.version,
+		Commit:           BuildCommit,
 		ConfigDir:        s.store.Dir(),
 		DefaultWorkspace: store.DefaultWorkspace(home),
 	})
