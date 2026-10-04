@@ -1876,6 +1876,7 @@ dialog.dlg-wide[open]{
             <div class="about">
               <dl>
                 <dt data-i18n="settings.version"></dt><dd id="aboutVersion">—</dd>
+                <dt data-i18n="settings.build"></dt><dd id="aboutCommit">—</dd>
                 <dt data-i18n="settings.configPath"></dt><dd id="aboutConfig">—</dd>
               </dl>
             </div>
@@ -2113,7 +2114,7 @@ const S = {
   batchPaths: new Set(),
   // runPicked is what the running batch was queued with; see settlePick.
   runPicked: new Set(),
-  meta: { version: "dev", home: "", configDir: "", defaultWorkspace: "" },
+  meta: { version: "dev", commit: "", home: "", configDir: "", defaultWorkspace: "" },
 };
 
 const FALLBACK_LANGS = ["zh-CN", "zh-TW", "en", "ja", "ko"];
@@ -6685,6 +6686,7 @@ async function boot() {
     });
     S.meta.home = state.home || "";
     S.meta.version = state.version || "dev";
+    S.meta.commit = state.commit || "";
     S.meta.configDir = state.configDir || "";
     S.meta.defaultWorkspace = state.defaultWorkspace || "";
   }
@@ -6701,6 +6703,9 @@ async function boot() {
   syncSettings();
 
   $("aboutVersion").textContent = S.meta.version;
+  // A build made by hand has no revision to name, and an empty row would read
+  // as a bug rather than as "this is a development build".
+  $("aboutCommit").textContent = S.meta.commit || t("settings.buildDev");
   $("aboutConfig").textContent = S.meta.configDir || "—";
   $("srcDir").value = S.cfg.dir || "";
   $("recursive").checked = ui.recursive !== false;
