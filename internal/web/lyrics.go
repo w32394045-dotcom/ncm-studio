@@ -116,7 +116,7 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 	// beside the audio would say a file has no .lrc while the import is about
 	// to find one in the folder the user keeps them in.
 	out := inspectAll(paths, s.store.Config().LCROutput)
-	applyMinSize(out, s.store.ScanFilter())
+	applyMinSize(out, s.store.ScanFilter(), statted)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	writeJSON(w, http.StatusOK, out)
 }
@@ -126,16 +126,30 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 // It runs after the metadata read rather than before, because the row is the
 // thing being marked: a file that was filtered out still shows its title and
 // duration, which is what tells the user whether the minimum they chose is the
-// one they meant. A file that could not be stat'ed keeps whatever state the
-// read gave it.
-func applyMinSize(entries []audioEntry, filter store.ScanFilter) {
+// one they meant.
+//
+// A file whose size could not be read — it went away between the directory walk
+// and the stat, or its metadata is unreadable — keeps whatever the read gave
+// it. It is not reported as "too small": a filter with no size to compare
+// against has no opinion, and saying otherwise would send the user looking for
+// a setting that is not the problem.
+func applyMinSize(entries []audioEntry, filter store.ScanFilter, sizeKnown func(audioEntry) bool) {
 	for i := range entries {
+		if !sizeKnown(entries[i]) {
+			continue
+		}
 		if ok, reason := filter(entries[i].Path, entries[i].Size); !ok {
 			entries[i].Skipped = reason
 			entries[i].Writable = false
 		}
 	}
 }
+
+// statted reports whether a row carries a size the filter can be applied to.
+// A file of zero bytes is a real answer — an empty file is exactly what the
+// filter is for — so the ModTime the same stat call set is what tells the two
+// apart.
+func statted(e audioEntry) bool { return e.ModTime != "" }
 
 // scanAudio lists the files under dir this program might be able to write to.
 // Unreadable subdirectories are skipped rather than failing the scan, which is
