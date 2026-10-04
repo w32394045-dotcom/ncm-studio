@@ -139,8 +139,17 @@ func (s *Server) handleCoverFill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The rewrite is serialised with every other one: it copies the whole file,
-	// and two of them on one track would interleave into garbage.
+	// The same lock the other four cover handlers take, and for the same
+	// reason: it serialises this rewrite against them, so a fill running from
+	// one page cannot rewrite a file while the editor on another is rewriting
+	// the same one. tag.SetCover holds a per-file lock of its own, which is
+	// what covers a rewrite started from somewhere else entirely — the lyrics
+	// page, or a backfill batch.
+	s.coverMu.Lock()
+	defer s.coverMu.Unlock()
+	// And the write semaphore, which bounds how many whole-file copies are in
+	// flight at once: filling in a library touches files of a hundred megabytes
+	// each, and doing several at once is how a phone's storage starts thrashing.
 	release, ok := s.acquireWrite(r)
 	if !ok {
 		return
