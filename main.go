@@ -40,6 +40,10 @@ func main() {
 	flag.Parse()
 
 	if *version {
+		if buildCommit != "" {
+			fmt.Printf("ncm-studio %s (%s)\n", buildVersion, buildCommit)
+			return
+		}
 		fmt.Println("ncm-studio", buildVersion)
 		return
 	}
@@ -147,6 +151,9 @@ func main() {
 		LRC:     lrcPool,
 		AI:      aiPool,
 	}, searcher, caches.forWorkspace, buildVersion)
+	// The revision is shown in the about panel beside the version; both are
+	// stamped at link time by the release build.
+	web.BuildCommit = buildCommit
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 	httpSrv := &http.Server{
 		Addr:              addr,
@@ -201,6 +208,11 @@ func main() {
 
 // buildVersion is stamped at build time with -ldflags "-X main.buildVersion=...".
 var buildVersion = "dev"
+
+// buildCommit is stamped the same way, and shown beside the version in the
+// about panel: a release name says which build this is, and the commit says
+// exactly which source it came from.
+var buildCommit = ""
 
 func defaultConfigDir(home string) string {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
