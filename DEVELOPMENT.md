@@ -90,7 +90,53 @@ RC4 变换 460 MB/s、SHA-256 520 MB/s、目录遍历 400 个文件 0.5 秒。
 用 `time.Since` 计时、`runtime.ReadMemStats` 看分配、`/proc/self/io` 看真实读写字节。
 第二个数字是关键：只看时钟会被页缓存骗过去，只看结果会被「重写了但恰好一样大」骗过去。
 
-## 踩过的坑
+## 发版
+
+发版全在 GitHub 云端做，本机不需要工具链：
+
+```bash
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+推 tag 会触发 `.github/workflows/build.yml`，依次跑测试 → 交叉编译十个平台 →
+打 Windows 一键包 → 打 .deb 和 AppImage → 检查包内容 → 建 Release 并把产物挂上去。
+
+也可以手动跑（Actions → build → Run workflow）：`publish` 不勾就只构建、不发版，
+用来验证打包改动；勾上才会建 Release。手动跑不填版本就用 `日期-短commit`。
+
+产物（15 个）：
+
+| 文件 | 说明 |
+| --- | --- |
+| `ncm-studio-<v>-windows-amd64.zip` / `-arm64.zip` | 解压后双击 `start-ncm-studio.bat`，自动开浏览器 |
+| `ncm-studio_<v>_amd64.deb` | `apt install ./…deb`，装 `/usr/bin/ncm-studio`，带菜单项和图标 |
+| `ncm-studio-<v>-x86_64.AppImage` | 免安装，双击即跑（AppRun 里会 `xdg-open` 打开界面） |
+| `ncm-studio-linux-{amd64,arm64,arm}` | 单文件，`arm` 是 armv7（树莓派） |
+| `ncm-studio-{darwin-amd64,darwin-arm64}` | macOS Intel / Apple Silicon |
+| `ncm-studio-{freebsd-amd64,freebsd-arm64}` | FreeBSD |
+| `ncm-studio-android-arm64` | Termux 里直接跑 |
+| `ncm-studio-windows-{amd64,arm64}.exe` | 裸 exe，zip 里的那个 |
+| `checksums.txt` | 上面每个文件的 sha256 |
+
+打包脚本在 `packaging/`，都是普通 shell，可以在任何 Linux 上单独跑：
+
+```bash
+VERSION=1.0.1 bash packaging/build-linux.sh        # .deb + AppImage
+VERSION=1.0.1 bash packaging/build-windows.sh      # 一键 zip（需要 zip）
+VERSION=1.0.1 bash packaging/check-linux-packages.sh  # 检查包内容
+bash packaging/release-notes.sh 1.0.1 abc1234      # 发布说明
+```
+
+几个坑，都是踩过的：
+
+- **`.deb` 的版本号不能以字母开头**：tag 是 `v1.0.0`，进 deb 之前必须去掉 `v`。
+  版本在 workflow 的 `version` job 里统一归一化，脚本里也各自 `VERSION="${VERSION#v}"` 兜一层。
+- **通过 API 上传的文件没有可执行位**：所以 workflow 里一律 `bash packaging/xxx.sh`，
+  不要写 `./packaging/xxx.sh`。
+- **`FOO=bar cmd` 这种前缀只在字面量时才算赋值**：`$extra` 展开出的 `GOARM=7`
+  会被 shell 当成命令去找，写成 `env GOARM="$goarm" go build …` 才对。
+- **`ldd` 把「不是动态可执行文件」写在 stderr**：只抓 stdout 会把好二进制判成坏的。
+
 
 - 改文件用 PowerShell 的 `-replace` + `Set-Content` 会把非 ASCII 字符写成 mojibake，
   Go 源文件里全是中文注释和 `t("覆盖")` 这类字符串，**别用 PowerShell 改源码**。
