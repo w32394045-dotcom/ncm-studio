@@ -331,7 +331,13 @@ func Open(dir string, defaults Config) (*Store, error) {
 			// that does not mention the size filter predates it. Coming up with
 			// the default is right there, while an explicit 0 — which is how
 			// the setting is turned off — is a value and is kept.
-			if !patchKeys(data)["minSize"] {
+			//
+			// The key is looked for in the config member of the file, not at
+			// the top level: the file is an envelope holding the settings and
+			// the records, so asking the envelope about a setting always
+			// answers "not there" and would silently reset the filter on every
+			// start.
+			if !patchKeys(configMember(data))["minSize"] {
 				s.config.MinSize = DefaultMinSize()
 			} else {
 				s.config.MinSize = s.config.MinSize.normalise()
