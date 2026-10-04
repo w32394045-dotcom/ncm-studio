@@ -1,0 +1,263 @@
+# Builds every release artifact in the cloud and publishes them.
+#
+# Two triggers, on purpose:
+#   - pushing a tag (v1.2.3) does the whole thing: tests, ten cross-compiled
+#     binaries, the Windows one-click zip, the .deb and the AppImage, then a
+#     GitHub release with all of it attached.
+#   - running it by hand builds the same artifacts but stops short of a release
+#     unless "publish" is ticked. That is how a packaging change gets checked
+#     without burning a version number.
+#
+# The tool has no dependencies and no cgo, so nothing here needs a container or
+# a toolbox download: CGO_ENABLED=0 go build is the whole build.
+name: build
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp (default: the tag, or a date-commit for a manual run)"
+        required: false
+      publish:
+        description: "Publish a GitHub release with these artifacts"
+        type: boolean
+        default: false
+      prerelease:
+        description: "Mark the release as a pre-release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── resolve one version for every job to agree on ─────────────────────────
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - id: v
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            v="${{ github.event.inputs.version }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            v="${GITHUB_REF_NAME}"
+          else
+            v="$(date -u +%Y%m%d)-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${v#v}" >> "$GITHUB_OUTPUT"
+          echo "resolved version=${v} tag=v${v#v}"
+
+  # ── the tests ─────────────────────────────────────────────────────────────
+  #
+  # The suite runs on the host, and is cross-compiled for android/arm64 as well:
+  # the phone is what this tool is for, so an arm64-only mistake — a bad
+  # conversion, an assumption about word size — should be caught here rather
+  # than on somebody's phone.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      # Pinned rather than relying on the runner's node: the front-end check is
+      # part of what a release is gated on, so its version should not drift.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^$' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - name: vet and test (host)
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+      - name: compile for android/arm64
+        env:
+          GOOS: android
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: |
+          go vet ./...
+          go build ./...
+          echo "android/arm64 compiles"
+      - name: static front-end check
+        run: node tools/check-static.cjs
+      - name: workflow check
+        run: node tools/check-workflows.cjs
+
+  # ── the ten single-file binaries ──────────────────────────────────────────
+  binaries:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: cross-compile every platform
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # -trimpath so the binary carries no build-machine paths, and -s -w to
+          # drop the symbol table: a release binary is not a debugging artifact.
+          LDFLAGS="-s -w -X main.buildVersion=${VERSION} -X main.buildCommit=${GITHUB_SHA::8}"
+          while read -r goos goarch extra; do
+            [ -n "${goos:-}" ] || continue
+            out="dist/ncm-studio-${goos}-${goarch}"
+            echo "── ${goos}/${goarch} ${extra}"
+            # shellcheck disable=SC2086
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" $extra \
+              go build -trimpath -ldflags "$LDFLAGS" -o "$out" .
+            # Windows gets the extension that makes it double-clickable.
+            [ "$goos" = "windows" ] && mv "$out" "${out}.exe"
+          done <<'TARGETS'
+          linux amd64
+          linux arm64
+          linux arm GOARM=7
+          windows amd64
+          windows arm64
+          darwin amd64
+          darwin arm64
+          freebsd amd64
+          freebsd arm64
+          android arm64
+          TARGETS
+          echo
+          ls -lh dist
+
+      - name: check every binary is the architecture it claims
+        run: |
+          set -e
+          fail=0
+          check() {
+            want="$1"; f="$2"
+            got="$(file -b "$f")"
+            case "$got" in
+              *"$want"*) echo "ok   $f: $want" ;;
+              *) echo "FAIL $f: expected $want, got $got"; fail=1 ;;
+            esac
+          }
+          check "x86-64"        dist/ncm-studio-linux-amd64
+          check "ARM aarch64"   dist/ncm-studio-linux-arm64
+          check "ARM, EABI5"    dist/ncm-studio-linux-arm
+          check "PE32+"         dist/ncm-studio-windows-amd64.exe
+          check "PE32+"         dist/ncm-studio-windows-arm64.exe
+          check "Mach-O 64-bit x86_64" dist/ncm-studio-darwin-amd64
+          check "Mach-O 64-bit arm64"  dist/ncm-studio-darwin-arm64
+          check "FreeBSD"       dist/ncm-studio-freebsd-amd64
+          check "FreeBSD"       dist/ncm-studio-freebsd-arm64
+          check "ARM aarch64"   dist/ncm-studio-android-arm64
+          echo "── the linux build runs and reports its version"
+          chmod +x dist/ncm-studio-linux-amd64
+          ./dist/ncm-studio-linux-amd64 -version
+          exit $fail
+
+      - name: windows one-click zip
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: bash packaging/build-windows.sh
+
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum ncm-studio-* > checksums.txt
+          cat checksums.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            dist/ncm-studio-*
+            dist/checksums.txt
+          if-no-files-found: error
+
+  # ── the Linux packages ────────────────────────────────────────────────────
+  linux-packages:
+    needs: [version, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist
+      - name: build .deb and .AppImage
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          chmod +x dist/ncm-studio-linux-amd64
+          bash packaging/build-linux.sh
+      - name: smoke-test the packages
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: bash packaging/check-linux-packages.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+          if-no-files-found: error
+
+  # ── the release ───────────────────────────────────────────────────────────
+  release:
+    needs: [version, binaries, linux-packages]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: write the release notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: packaging/release-notes.sh "$VERSION" "${GITHUB_SHA::8}" > RELEASE_NOTES.md
+
+      - name: what is being published
+        run: ls -lh dist
+
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: ncm-studio ${{ needs.version.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/ncm-studio-*
+            dist/checksums.txt
+            dist/*.deb
+            dist/*.AppImage
