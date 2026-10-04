@@ -1,0 +1,13 @@
+# The build output: a single static binary, produced per platform.
+/ncm-studio
+/ncmstudio
+
+# The workspace and the settings a run leaves behind. They hold the cover
+# library, the lyric cache and the record of what has been decrypted — all of
+# it private to whoever ran the tool.
+/ncm-studio-data/
+ncm-studio-data/
+
+# Go's own build and test leftovers.
+*.test
+*.out
