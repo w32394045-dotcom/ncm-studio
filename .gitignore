@@ -8,6 +8,9 @@
 /ncm-studio-data/
 ncm-studio-data/
 
-# Go's own build and test leftovers.
+# Go's own build and test leftovers, including the caches this workspace keeps
+# so a build does not depend on the machine's GOCACHE being writable.
 *.test
 *.out
+/.gocache/
+/.gopath/
