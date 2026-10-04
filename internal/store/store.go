@@ -418,6 +418,13 @@ func (s *Store) Patch(raw []byte) error {
 		if !ok {
 			return nil
 		}
+		// A JSON null decodes into an int as a no-op, leaving zero behind. That
+		// would turn `{"workers":null}` into a stored 0 — a concurrency no pool
+		// will run, and the one value the handler's clamp exists to prevent. A
+		// null means "say nothing", which is what an absent key means.
+		if strings.TrimSpace(string(raw)) == "null" {
+			return nil
+		}
 		var v int
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return fmt.Errorf("%s: %w", key, err)
@@ -439,7 +446,7 @@ func (s *Store) Patch(raw []byte) error {
 		// A patch that names the field is taken at its word, including a null
 		// or an empty object: both mean "no minimum", which is the value that
 		// has to stay reachable. A field that is absent is left alone.
-		min, _, err := decodeMinSize(raw)
+		min, err := decodeMinSize(raw)
 		if err != nil {
 			return fmt.Errorf("minSize: %w", err)
 		}
