@@ -9,6 +9,10 @@
 set -Eeuo pipefail
 
 VERSION="${VERSION:?set VERSION}"
+# A tag may arrive as v1.2.3; every field in a .deb that carries a version has to
+# start with a digit, so the leading v comes off here rather than being
+# remembered at each call site.
+VERSION="${VERSION#v}"
 DIST="${DIST:-dist}"
 NAME="ncm-studio"
 WORK="${WORK:-build-linux}"
