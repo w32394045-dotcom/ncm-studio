@@ -29,7 +29,11 @@ func SetCover(path string, cover []byte, mime string, onProgress ProgressFunc) e
 	release := lockRewrite(path)
 	defer release()
 
-	f, err := os.Open(path)
+	// Opened read-write, not read-only: when the metadata change fits in the
+	// chain's padding, it is written back through this same handle instead of
+	// being copied to a new file. Only the metadata is ever written, and only
+	// after the new chain has been measured against the old one.
+	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
 		return err
 	}
@@ -63,6 +67,14 @@ func SetCover(path string, cover []byte, mime string, onProgress ProgressFunc) e
 
 	switch {
 	case len(head) >= 4 && string(head[:4]) == "fLaC":
+		if coverInPlace(f, cover, mime) == nil {
+			// The chain had room: the audio never moved, and the temporary file
+			// was created and is about to be removed without ever being
+			// written to. On a hundred-megabyte track that is the difference
+			// between rewriting all of it and rewriting a few kilobytes.
+			os.Remove(tmp)
+			return nil
+		}
 		err = rewriteFLAC(f, out, cover, mime, total, onProgress)
 	case len(head) >= 3 && string(head[:3]) == "ID3":
 		err = rewriteMP3(f, out, head, cover, mime, total, onProgress)
@@ -84,8 +96,33 @@ func SetCover(path string, cover []byte, mime string, onProgress ProgressFunc) e
 	return os.Rename(tmp, path)
 }
 
+// coverInPlace replaces the PICTURE block without copying the audio, reporting
+// errNoRoom when the chain has no room for it.
+//
+// The whole point is that nothing after the metadata moves, so a cover change
+// on a large file costs the size of the artwork rather than the size of the
+// track. It is safe by construction rather than by convention: the replacement
+// chain is measured against the chain it replaces before a byte is written, and
+// it is written with a single pwrite at the metadata offset.
+func coverInPlace(f *os.File, cover []byte, mime string) error {
+	if len(cover) == 0 {
+		return errNoRoom
+	}
+	// The old picture is not wanted: the new one replaces it, and buffering a
+	// megabyte of artwork only to overwrite it is the cost this function exists
+	// to avoid in the first place.
+	blocks, _, _, err := readFLACBlocks(f, false)
+	if err != nil {
+		return err
+	}
+	return fitInPadding(f, blocks, blockPicture, buildPicture(cover, mime))
+}
+
 func rewriteFLAC(src *os.File, dst *os.File, cover []byte, mime string, total int64, onProgress ProgressFunc) error {
-	blocks, frameOffset, _, err := readFLACBlocks(src)
+	// The source's own artwork is not wanted: the caller's cover replaces it a
+	// few lines below, and on a file with a megabyte of embedded art that is a
+	// megabyte not copied out of the window and then discarded.
+	blocks, frameOffset, _, err := readFLACBlocks(src, false)
 	if err != nil {
 		return err
 	}
