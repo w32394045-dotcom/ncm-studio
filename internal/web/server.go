@@ -333,14 +333,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	// is read here only to clamp it; Language and the directories are the
 	// store's to write.
 	var patch struct {
-		Workspace   *string             `json:"workspace"`
-		Workers     *int                `json:"workers"`
-		LCROutput   *string             `json:"lrcOutput"`
-		LRCConflict *store.Conflict     `json:"lrcConflict"`
-		AITarget    *string             `json:"aiTarget"`
-		AIProvider  *string             `json:"aiProvider"`
-		AIModel     *string             `json:"aiModel"`
-		AIThinking  *string             `json:"aiThinking"`
+		Workspace   *string         `json:"workspace"`
+		Workers     *int            `json:"workers"`
+		LCROutput   *string         `json:"lrcOutput"`
+		LRCConflict *store.Conflict `json:"lrcConflict"`
+		AITarget    *string         `json:"aiTarget"`
+		AIProvider  *string         `json:"aiProvider"`
+		AIModel     *string         `json:"aiModel"`
+		AIThinking  *string         `json:"aiThinking"`
 	}
 	if err := decodeJSONBytes(body, &patch); err != nil {
 		writeError(w, http.StatusBadRequest, "%v", err)
