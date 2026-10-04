@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NCM Studio
+GenericName=NetEase .ncm decryptor
+Comment=Decrypt .ncm files into tagged MP3/FLAC with lyrics and cover art
+Exec=ncm-studio
+Icon=ncm-studio
+Terminal=false
+Categories=Audio;AudioVideo;Utility;
+Keywords=ncm;netease;music;flac;mp3;decrypt;
+StartupNotify=true
