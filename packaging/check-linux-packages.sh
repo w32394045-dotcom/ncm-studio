@@ -5,6 +5,7 @@
 set -Eeuo pipefail
 
 VERSION="${VERSION:?set VERSION}"
+VERSION="${VERSION#v}"
 DIST="${DIST:-dist}"
 v="${VERSION#v}"
 fail=0
