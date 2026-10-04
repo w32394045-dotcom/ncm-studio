@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -484,6 +485,15 @@ func getJSON(t *testing.T, url string, v any) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		t.Fatalf("GET %s: %d %s", url, resp.StatusCode, body)
+	}
+	// A slice passed in more than once has to be cleared first: encoding/json
+	// appends into whatever capacity it is given, so a second fetch of the same
+	// listing would decode the new rows onto the stale ones and every later
+	// assertion would be reading the first response.
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && !rv.IsNil() {
+		if el := rv.Elem(); el.Kind() == reflect.Slice && !el.IsNil() {
+			el.Set(reflect.MakeSlice(el.Type(), 0, el.Cap()))
+		}
 	}
 	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
 		t.Fatalf("GET %s: %v", url, err)
