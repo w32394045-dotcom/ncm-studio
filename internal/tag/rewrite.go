@@ -20,7 +20,15 @@ type ProgressFunc func(done, total int64)
 // The audio payload is streamed through, not re-encoded, and the result is
 // written beside the original and renamed over it, so an interrupted rewrite
 // leaves the original intact.
+//
+// The rewrite holds the per-file lock for the whole copy. It matters more here
+// than anywhere else: a cover change and a lyrics write are the two things a
+// user does by hand, from two pages that know nothing about each other, and
+// both of them stage through the same "<path>.part".
 func SetCover(path string, cover []byte, mime string, onProgress ProgressFunc) error {
+	release := lockRewrite(path)
+	defer release()
+
 	f, err := os.Open(path)
 	if err != nil {
 		return err
