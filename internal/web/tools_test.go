@@ -66,6 +66,12 @@ func newToolsServer(t *testing.T) *toolsServer {
 	}
 	if err := st.Update(func(c *store.Config) {
 		c.Dir, c.Output, c.Workspace, c.Workers = root, filepath.Join(root, "out"), root, 1
+		// The audio a test writes here is a couple of kilobytes: a real stream
+		// header and no frames. That is under the 500 KB the settings ship
+		// with, and the size filter is not what any of these tests are about,
+		// so it is switched off. TestFilesHonoursTheMinimumSize and
+		// TestAudioListingMarksFilteredRowsUnwritable cover the filter itself.
+		c.MinSize = store.MinSize{}
 	}); err != nil {
 		t.Fatal(err)
 	}
