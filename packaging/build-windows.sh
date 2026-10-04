@@ -8,6 +8,7 @@
 set -Eeuo pipefail
 
 VERSION="${VERSION:?set VERSION}"
+VERSION="${VERSION#v}"
 DIST="${DIST:-dist}"
 WORK="${WORK:-build-windows}"
 
