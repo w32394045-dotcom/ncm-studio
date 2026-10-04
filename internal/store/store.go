@@ -432,22 +432,24 @@ func (s *Store) Patch(raw []byte) error {
 	if raw, ok := fields["minSize"]; ok {
 		// A patch that names the field is taken at its word, including a null
 		// or an empty object: both mean "no minimum", which is the value that
-		// has to stay reachable.
-		if min, present, err := decodeMinSize(raw); err != nil {
+		// has to stay reachable. A field that is absent is left alone.
+		min, _, err := decodeMinSize(raw)
+		if err != nil {
 			return fmt.Errorf("minSize: %w", err)
-		} else if present {
-			s.config.MinSize = min
 		}
-		if raw, ok := fields["minSizeUnit"]; ok {
-			var unit string
-			if err := json.Unmarshal(raw, &unit); err != nil {
-				return fmt.Errorf("minSizeUnit: %w", err)
-			}
-			if u, ok := ParseSizeUnit(unit); ok {
-				// The unit is presentation only; it must not move the line, so
-				// only the remembered unit changes here.
-				s.config.MinSize.Unit = u
-			}
+		s.config.MinSize = min
+	}
+	if raw, ok := fields["minSizeUnit"]; ok {
+		// The unit is presentation only, so it is read whatever else the patch
+		// carries — including a patch that changes nothing but the unit, which
+		// is what the dropdown sends when it is moved on its own. It must not
+		// move the threshold: only the remembered unit changes here.
+		var unit string
+		if err := json.Unmarshal(raw, &unit); err != nil {
+			return fmt.Errorf("minSizeUnit: %w", err)
+		}
+		if u, ok := ParseSizeUnit(unit); ok {
+			s.config.MinSize.Unit = u
 		}
 	}
 	if err := setInt("workers", &s.config.Workers); err != nil {
