@@ -252,7 +252,7 @@ jobs:
       - name: write the release notes
         env:
           VERSION: ${{ needs.version.outputs.version }}
-        run: packaging/release-notes.sh "$VERSION" "${GITHUB_SHA::8}" > RELEASE_NOTES.md
+        run: bash packaging/release-notes.sh "$VERSION" "${GITHUB_SHA::8}" > RELEASE_NOTES.md
 
       - name: what is being published
         run: ls -lh dist
