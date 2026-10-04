@@ -40,13 +40,15 @@ if [ -f "$deb" ]; then
   "${TMPDIR:-/tmp}/deb-root/usr/bin/ncm-studio" -version >/dev/null && ok "the packaged binary runs" \
     || bad "the packaged binary does not run"
   # And it must be static: a package that needs a runtime the user may not have
-  # is the failure mode this check exists for.
+  # is the failure mode this check exists for. ldd writes its "not a dynamic
+  # executable" verdict to stderr, so both streams are captured here — the
+  # first version of this check looked only at stdout and failed a good binary.
   if command -v ldd >/dev/null 2>&1; then
-    if ldd "${TMPDIR:-/tmp}/deb-root/usr/bin/ncm-studio" 2>&1 | grep -q "not a dynamic executable"; then
-      ok "statically linked"
-    else
-      bad "not statically linked: $(ldd "${TMPDIR:-/tmp}/deb-root/usr/bin/ncm-studio" | head -3)"
-    fi
+    ldd_out="$(ldd "${TMPDIR:-/tmp}/deb-root/usr/bin/ncm-studio" 2>&1 || true)"
+    case "$ldd_out" in
+      *"not a dynamic executable"*|*"statically linked"*) ok "statically linked" ;;
+      *) bad "not statically linked: $(echo "$ldd_out" | head -3)" ;;
+    esac
   fi
 fi
 
