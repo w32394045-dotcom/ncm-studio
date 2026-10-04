@@ -2,13 +2,13 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
 
 	"ncm-studio/internal/cover"
-	"ncm-studio/internal/lyric"
 	"ncm-studio/internal/tag"
 )
 
@@ -34,8 +34,10 @@ const (
 // One file per request rather than a batch, because the batch this drives is
 // the page's: a batch here would need its own pool, its own event stream and
 // its own cancel, and the page can already stop between two files. What the
-// server must not do is let two rewrites of one file race, and that is what the
-// write semaphore is for.
+// server must not do is let two rewrites of one file race — and that is not
+// what the write semaphore is for, since it has two slots by design. The
+// serialisation comes from coverMu here and from the per-file lock inside
+// tag.SetCover, which is what covers a rewrite started from another page.
 type coverFillResult struct {
 	Path    string `json:"path"`
 	State   string `json:"state"`
@@ -79,8 +81,13 @@ func (s *Server) handleCoverFill(w http.ResponseWriter, r *http.Request) {
 	}
 	// A file the scan was told not to offer is not filled either: the minimum
 	// size is about which files this program will touch, and a lookup writes
-	// into the file it is asked about.
-	if ok, err := s.store.MeetsMinSize(req.Path); err != nil || !ok {
+	// into the file it is asked about. The two failures are told apart because
+	// they call for different things: a file that is too small needs a setting
+	// changed, a file that has gone away needs a re-scan.
+	if ok, err := s.store.MeetsMinSize(req.Path); err != nil {
+		writeError(w, http.StatusBadRequest, "cannot read the file's size: %v", err)
+		return
+	} else if !ok {
 		writeError(w, http.StatusBadRequest, "this file is below the minimum size in the settings")
 		return
 	}
@@ -232,23 +239,25 @@ func (s *Server) coverFillTarget(r *http.Request, path string, info *tag.AudioIn
 		}, nil
 	}
 
-	// What the search matched, so the log line and the row can name it.
-	best := lyric.Candidate{MusicID: sug.Best}
+	// What the search matched, so the log line and the row can name it. The
+	// ranking can leave the winner out of its own list — a candidate whose
+	// title did not score is dropped from the list but can still be the
+	// decision — and then the file's own tags are the better name to show.
+	name, artists := info.Title, info.Artists
 	for _, c := range sug.Candidates {
 		if c.MusicID == sug.Best {
-			best = lyric.Candidate{
-				MusicID: c.MusicID,
-				Name:    c.Name,
-				Artists: c.Artists,
-				Album:   c.Album,
-			}
+			name, artists = c.Name, c.Artists
 			break
 		}
 	}
+	if strings.TrimSpace(name) == "" {
+		// Nothing to call it: the row falls back to the id rather than to a
+		// blank chip.
+		name = fmt.Sprintf("song %d", sug.Best)
+	}
 	return sug.Best, tag.Credit{
 		MusicID: sug.Best,
-		Title:   best.Name,
-		Artists: best.Artists,
-		Album:   best.Album,
+		Title:   name,
+		Artists: artists,
 	}, nil, nil
 }
