@@ -235,7 +235,11 @@ func applyLyrics(c *vorbisComments, l Lyrics, credit Credit) {
 }
 
 func rewriteFLACLyrics(src, dst *os.File, l Lyrics, credit Credit, total int64, onProgress ProgressFunc) error {
-	blocks, frameOffset, _, err := readFLACBlocks(src)
+	// The picture is not read into memory here: it is neither edited nor
+	// examined by this function, and on a file with a megabyte of embedded art
+	// that is a megabyte of copying per track. What it does need is the block
+	// list, which is a few kilobytes.
+	blocks, frameOffset, _, err := readFLACBlocks(src, false)
 	if err != nil {
 		return err
 	}
@@ -286,7 +290,7 @@ func rewriteFLACLyrics(src, dst *os.File, l Lyrics, credit Credit, total int64, 
 		return err
 	}
 	for i, b := range out {
-		if err := writeBlock(dst, b.Type, b.Data, i == len(out)-1); err != nil {
+		if err := writeBlockFrom(dst, src, b, i == len(out)-1); err != nil {
 			return err
 		}
 	}
@@ -295,6 +299,30 @@ func rewriteFLACLyrics(src, dst *os.File, l Lyrics, credit Credit, total int64, 
 		return err
 	}
 	return copyAudio(src, dst, total, onProgress)
+}
+
+// writeBlockFrom writes one metadata block, taking its payload from Memory when
+// the reader kept it and from the source file when it did not.
+//
+// The streaming case is the picture: a chain walked without buffering artwork
+// still has to be written back with it, and copying it straight from the source
+// to the destination costs a buffer instead of a megabyte. The read is short by
+// construction — Size came from the block's own header — so io.ReadFull detects
+// a file that changed underneath us rather than writing a short block.
+func writeBlockFrom(dst, src *os.File, b flacBlock, isLast bool) error {
+	if b.Data == nil && b.Size > 0 {
+		if err := writeBlockHeader(dst, b.Type, b.Size, isLast); err != nil {
+			return err
+		}
+		if _, err := src.Seek(b.At, io.SeekStart); err != nil {
+			return err
+		}
+		if _, err := io.CopyN(dst, src, int64(b.Size)); err != nil {
+			return err
+		}
+		return nil
+	}
+	return writeBlock(dst, b.Type, b.Data, isLast)
 }
 
 func rewriteMP3Lyrics(src, dst *os.File, head []byte, l Lyrics, credit Credit, total int64, onProgress ProgressFunc) error {
@@ -503,7 +531,10 @@ func Inspect(path string) (*AudioInfo, error) {
 	switch {
 	case len(head) >= 4 && string(head[:4]) == "fLaC":
 		info.Format = FormatFLAC
-		blocks, _, _, err := readFLACBlocks(f)
+		// The cover is reported by its presence, not by its bytes, so the
+		// picture payload is stepped over instead of buffered: this runs once
+		// per file on every scan of a library.
+		blocks, _, _, err := readFLACBlocks(f, false)
 		if err != nil {
 			return nil, err
 		}
