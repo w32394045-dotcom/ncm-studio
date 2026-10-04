@@ -51,16 +51,20 @@ jobs:
       - id: v
         run: |
           set -euo pipefail
+          # Everything downstream uses the version without its leading "v": a
+          # tarball may be called v1.2.3, but a Debian package version has to
+          # start with a digit. The tag keeps the v.
           if [ -n "${{ github.event.inputs.version }}" ]; then
-            v="${{ github.event.inputs.version }}"
+            raw="${{ github.event.inputs.version }}"
           elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            v="${GITHUB_REF_NAME}"
+            raw="${GITHUB_REF_NAME}"
           else
-            v="$(date -u +%Y%m%d)-$(git rev-parse --short HEAD)"
+            raw="$(date -u +%Y%m%d)-$(git rev-parse --short HEAD)"
           fi
+          v="${raw#v}"
           echo "version=${v}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${v#v}" >> "$GITHUB_OUTPUT"
-          echo "resolved version=${v} tag=v${v#v}"
+          echo "tag=v${v}" >> "$GITHUB_OUTPUT"
+          echo "resolved: version=${v} tag=v${v}"
 
   # ── the tests ─────────────────────────────────────────────────────────────
   #
@@ -211,7 +215,7 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           name: binaries
           path: dist
@@ -240,7 +244,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
