@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
 	"strconv"
 )
 
 // FLAC metadata block types we care about.
 const (
 	blockStreamInfo    = 0
+	blockPadding       = 1
 	blockVorbisComment = 4
 	blockPicture       = 6
 )
@@ -182,6 +184,121 @@ func buildVorbisComment(t *Tags) []byte {
 	}
 	return out
 }
+
+// fitInPadding rewrites one block of the chain in place, absorbing the
+// difference into the chain's padding block so that the metadata section keeps
+// exactly the length it had.
+//
+// A FLAC chain is free to carry a PADDING block, and every encoder that expects
+// tags to be edited later leaves one. When the new payload fits in the room the
+// block it replaces and that padding occupy together, the rewrite never has to
+// touch the audio frames: a hundred-megabyte track costs a few kilobytes of
+// writing instead of a hundred megabytes, which is the difference between a
+// cover change taking a second and taking a minute on a phone.
+//
+// replacement names the block type being written. The returned error is
+// errNoRoom when there is not enough room, which tells the caller to fall back
+// to the full rewrite it would otherwise have done.
+func fitInPadding(f *os.File, blocks []flacBlock, replacement byte, payload []byte) error {
+	var (
+		chain      = int64(4) // "fLaC"
+		oldPayload = 0
+		padding    = 0
+		replaced   = false
+	)
+	for _, b := range blocks {
+		chain += 4 + int64(b.Size)
+		switch {
+		case b.Type == blockPadding:
+			padding += b.Size
+		case b.Type == replacement:
+			oldPayload = b.Size
+		}
+	}
+	if padding == 0 || len(payload) > oldPayload+padding {
+		return errNoRoom
+	}
+
+	// The chain is rebuilt in order: the replacement at the position the block
+	// it replaces held, every other block where it was, and the padding last —
+	// holding whatever the difference comes to. Writing it at the end is what
+	// keeps the arithmetic exact, because only the blocks that survive are
+	// counted.
+	var buf bytes.Buffer
+	for _, b := range blocks {
+		switch {
+		case b.Type == blockPadding:
+			continue // emitted once, below
+		case b.Type == replacement && !replaced:
+			replaced = true
+			if err := writeBlockHeader(&buf, b.Type, len(payload), false); err != nil {
+				return err
+			}
+			buf.Write(payload)
+		default:
+			// Everything else is carried across byte for byte, streaming out
+			// of the file what was deliberately not buffered.
+			if err := writeBlockHeader(&buf, b.Type, b.Size, false); err != nil {
+				return err
+			}
+			if b.Data == nil && b.Size > 0 {
+				data := make([]byte, b.Size)
+				if _, err := f.ReadAt(data, b.At); err != nil {
+					return err
+				}
+				buf.Write(data)
+			} else if len(b.Data) > 0 {
+				buf.Write(b.Data)
+			}
+		}
+	}
+	// A chain needs a terminating PADDING block, and without one the room this
+	// rewrite depended on would not be there in the first place.
+	rest := oldPayload + padding - len(payload)
+	if err := writeBlockHeader(&buf, blockPadding, rest, false); err != nil {
+		return err
+	}
+	buf.Write(make([]byte, rest))
+
+	out := buf.Bytes()
+	if int64(len(out)) != chain-4 {
+		// Counting wrong here would move the audio frames, which is the one
+		// mistake that corrupts the file. Falling back costs a rewrite.
+		return errNoRoom
+	}
+
+	// Exactly one block may carry the is-last flag, and it must be the last one
+	// — the padding block. The walk that finds it stops as soon as it reaches
+	// the end of the rebuilt chain: a walk that kept going would read whatever
+	// follows the chain as a block header, which is how an earlier version of
+	// this function managed to corrupt the file it was trying to improve.
+	pos := 0
+	for n := 0; ; n++ {
+		if n > maxMetadataBlocks || pos+4 > len(out) {
+			return errNoRoom
+		}
+		length := int(out[pos+1])<<16 | int(out[pos+2])<<8 | int(out[pos+3])
+		end := pos + 4 + length
+		if end == len(out) {
+			out[pos] |= 0x80
+			break
+		}
+		if end > len(out) {
+			return errNoRoom
+		}
+		out[pos] &^= 0x80
+		pos = end
+	}
+
+	if _, err := f.WriteAt(out, 4); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+// errNoRoom reports a metadata change that does not fit in the space the old
+// payload and the chain's padding leave behind.
+var errNoRoom = errors.New("tag: no room in the padding for this change")
 
 // writePictureBlock writes a PICTURE block holding the cover art.
 //
