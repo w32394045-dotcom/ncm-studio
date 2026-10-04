@@ -102,6 +102,11 @@ func newLyricsServer(t *testing.T, mode store.LyricsMode) lyricsServer {
 	if err := st.Update(func(c *store.Config) {
 		c.Dir, c.Output, c.Workspace, c.Workers = dir, filepath.Join(root, "out"), root, 1
 		c.Lyrics = mode
+		// The fixtures below are a stream header plus a few kilobytes of
+		// payload — well under the 500 KB the size filter ships with, and
+		// deliberately so: they exist to exercise tags, lyrics and covers, not
+		// the filter, which has tests of its own in min_size_test.go.
+		c.MinSize = store.MinSize{}
 	}); err != nil {
 		t.Fatal(err)
 	}
