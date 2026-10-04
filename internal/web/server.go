@@ -180,6 +180,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/cover/remove", s.handleCoverRemove)
 	mux.HandleFunc("POST /api/cover/fetch", s.handleCoverFetch)
 	mux.HandleFunc("POST /api/cover/forget", s.handleCoverForget)
+	// The cover page's backfill: one file, one request, driven by the page so
+	// that stopping between two files needs no cancel of its own.
+	mux.HandleFunc("POST /api/cover/fill", s.handleCoverFill)
 
 	return logRequests(sameOrigin(mux))
 }
