@@ -1556,6 +1556,14 @@ dialog.dlg-wide[open]{
           <svg class="icon icon-sm" aria-hidden="true"><use href="#i-search"/></svg>
           <span data-i18n="source.scan"></span>
         </button>
+        <!-- The cover half of what the lyrics page does: find the songs the
+             files are, by their tags and their names, and give the ones with
+             no artwork the official picture. -->
+        <button class="btn" id="coverFillBtn" type="button">
+          <svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg>
+          <span data-i18n="covers.fill"></span>
+        </button>
+        <button class="btn btn-quiet" id="coverFillStop" type="button" hidden data-i18n="covers.fillStop"></button>
       </div>
       <div class="toolbar tight">
         <svg class="icon icon-sm muted" aria-hidden="true"><use href="#i-search"/></svg>
@@ -1563,6 +1571,7 @@ dialog.dlg-wide[open]{
                style="flex:1 1 200px;min-height:36px" data-i18n-attr="placeholder:covers.search">
         <span class="count" id="coverCount"></span>
       </div>
+      <p class="hint" id="coverFillNote" hidden></p>
 
       <ul class="filelist" id="coverList" aria-live="polite"></ul>
       <div class="empty" id="coverEmpty" hidden>
@@ -2884,11 +2893,13 @@ function linkBtn(icon, label, href) {
 function updateSummary() {
   const n = S.files.length;
   const done = S.files.filter((f) => f.state === "done").length;
+  const small = S.files.filter((f) => f.skipped).length;
   const sel = S.selected.size;
   let text;
   if (n === 0 && S.jobs.size === 0) text = "";
   else if (done > 0) text = t("source.foundNew", { n: n - done, done: done });
   else text = t("source.found", { n: n });
+  if (small > 0) text += " · " + t("source.skipped", { n: small });
   if (sel > 0) text += " · " + t("source.selected", { n: sel });
   $("fileSummary").textContent = text;
 }
@@ -3998,6 +4009,10 @@ function lyricStateText(job, e) {
       default: return t("state.pending");
     }
   }
+  // The size filter is reported before "read only", which it also sets: a row
+  // that is out of reach only because of the minimum should say so, rather
+  // than blame the container it is in.
+  if (e && e.skipped) return e.skipped;
   if (e && !e.writable) return t("lyrics.readOnly");
   if (e && e.hasLyrics) return t("lyrics.hasLyrics");
   return t("lyrics.missing");
@@ -5537,7 +5552,7 @@ function infoFacts(e) {
 }
 
 /* ── Covers page ────────────────────────────────────────────────────────── */
-const C = { items: [], loaded: false, q: "" };
+const C = { items: [], loaded: false, q: "", rows: new Map() };
 
 function coverMatches(e, q) {
   const hay = [e.name, e.title, e.album, (e.artists || []).join(" ")].join(" ").toLowerCase();
@@ -5572,9 +5587,14 @@ function renderCovers() {
   const items = q ? C.items.filter((e) => coverMatches(e, q)) : C.items;
 
   list.innerHTML = "";
+  C.rows = new Map();
   $("coverEmpty").hidden = items.length > 0;
   list.hidden = items.length === 0;
-  for (const e of items) list.appendChild(buildCoverRow(e));
+  for (const e of items) {
+    const li = buildCoverRow(e);
+    C.rows.set(e.path, li);
+    list.appendChild(li);
+  }
 
   $("coverCount").textContent = q
     ? t("covers.matching", { n: items.length, total: C.items.length })
@@ -5612,7 +5632,7 @@ function buildCoverRow(e) {
     img.loading = "lazy";
     img.decoding = "async";
     img.alt = "";
-    img.src = "/api/cover/image?path=" + encodeURIComponent(e.path) + "&id=current";
+    img.src = coverThumbURL(e.path);
     img.addEventListener("error", () => img.replaceWith(thumbPlaceholder()));
     li.appendChild(img);
   } else {
@@ -5641,6 +5661,15 @@ function buildCoverRow(e) {
 
   const tail = document.createElement("div");
   tail.className = "item-tail";
+  if (e.writable) {
+    // Where a row's own outcome goes: what a cover lookup for this file did,
+    // or what it is doing. Rows the program cannot rewrite have nothing to
+    // report, so they keep the read-only chip instead.
+    const chip = document.createElement("span");
+    chip.className = "chip state-chip";
+    chip.hidden = true;
+    tail.appendChild(chip);
+  }
   if (!e.writable) {
     // The base chip is the quiet one: this is a fact about the row, not a
     // problem with it, so it should not wear a warning colour.
@@ -5649,7 +5678,7 @@ function buildCoverRow(e) {
     chip.textContent = t("lyrics.readOnly");
     chip.title = t("lyrics.readOnly");
     tail.appendChild(chip);
-  } else if (!e.hasCover) {
+  } else if (!e.hasCover && !coverFillReason(e.path)) {
     const chip = document.createElement("span");
     chip.className = "chip chip-warn";
     chip.textContent = t("covers.noCover");
@@ -5667,7 +5696,58 @@ function buildCoverRow(e) {
       if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
     });
   }
+  // The state chip is painted after the row exists, because a lookup that
+  // finished long ago has to come back with the row it belongs to.
+  if (e.writable) patchCoverRow(e.path);
   return li;
+}
+
+// patchCoverRow paints one cover row's state chip from the last lookup. It is
+// the only thing on the row that changes while a batch runs, so everything else
+// is left exactly as it was built.
+function patchCoverRow(path) {
+  const li = C.rows.get(path);
+  if (!li) return;
+  const chip = li.querySelector(".chip.state-chip");
+  if (!chip) return;
+  const state = coverFillState(path);
+  const reason = coverFillReason(path);
+  if (!state && !reason) {
+    chip.hidden = true;
+    return;
+  }
+  chip.hidden = false;
+  chip.className = "chip state-chip";
+  switch (state) {
+    case "running":
+      chip.textContent = t("covers.finding");
+      chip.classList.add("chip-run");
+      break;
+    case "applied":
+      chip.textContent = t("covers.filled");
+      chip.classList.add("chip-ok");
+      chip.title = reason || "";
+      break;
+    case "exists":
+      chip.textContent = t("covers.alreadyHas");
+      chip.classList.add("chip-ok");
+      break;
+    case "review":
+      // The matcher would not write this unasked; the row says so and the
+      // reason is on the title, where there is room for it.
+      chip.textContent = t("state.review");
+      chip.classList.add("chip-warn");
+      chip.title = reason || "";
+      break;
+    case "failed":
+      chip.textContent = t("state.failed");
+      chip.classList.add("chip-err");
+      chip.title = reason || "";
+      break;
+    default:
+      chip.className = "chip chip-warn";
+      chip.textContent = t("covers.noCover");
+  }
 }
 
 function thumbPlaceholder() {
@@ -5675,6 +5755,177 @@ function thumbPlaceholder() {
   span.className = "thumb thumb-none";
   span.innerHTML = '<svg class="icon icon-sm" aria-hidden="true"><use href="#i-image"/></svg>';
   return span;
+}
+
+/* ── Filling in missing covers ──────────────────────────────────────────── */
+// The cover page's answer to the lyrics backfill. The lyrics page can park a
+// file on a decision and keep its state on the server, because a batch there
+// runs on a pool of its own. This one is driven from here, one request per
+// file, for a reason: a batch of cover edits is a batch of full file rewrites,
+// and being able to stop between two of them is worth more than the requests
+// it saves.
+const fill = { running: false, path: "", done: 0, total: 0, applied: 0, failed: 0, review: 0, skipped: 0 };
+const coverFillStates = new Map(); // path -> {state, reason}
+let coverFillStop = false;
+
+function coverFillState(path) {
+  const s = coverFillStates.get(path);
+  return s ? s.state : "";
+}
+
+function coverFillReason(path) {
+  const s = coverFillStates.get(path);
+  return s ? s.reason || "" : "";
+}
+
+function setCoverFillState(path, state, reason) {
+  coverFillStates.set(path, { state: state, reason: reason || "" });
+}
+
+// Rows worth a lookup: the ones the program can rewrite and that have no
+// artwork. A row already carrying a cover is somebody's choice, and replacing
+// it silently is the one mistake here that cannot be undone.
+function coverFillTargets() {
+  return C.items.filter((e) => e.writable && !e.hasCover);
+}
+
+function updateCoverFillUI() {
+  $("coverFillStop").hidden = !fill.running;
+  $("coverFillBtn").disabled = fill.running || coverFillTargets().length === 0;
+  $("coverScanBtn").disabled = fill.running;
+  const note = $("coverFillNote");
+  if (fill.running) {
+    note.hidden = false;
+    note.textContent = t("covers.fillProgress", {
+      done: fill.done, total: fill.total, ok: fill.applied, review: fill.review, fail: fill.failed,
+    });
+  } else if (fill.total) {
+    note.hidden = false;
+    note.textContent = t("covers.fillDone", {
+      ok: fill.applied, review: fill.review, fail: fill.failed,
+    });
+  } else {
+    note.hidden = true;
+  }
+}
+
+async function fillCovers() {
+  if (fill.running) return;
+  const targets = coverFillTargets();
+  if (!targets.length) {
+    toast(t("covers.fillNone"), "err");
+    return;
+  }
+  const ok = await askConfirm({
+    title: t("covers.fill"),
+    body: t("covers.fillConfirm", { n: targets.length }),
+  });
+  if (!ok) return;
+
+  fill.running = true;
+  fill.done = fill.applied = fill.failed = fill.review = fill.skipped = 0;
+  fill.total = targets.length;
+  coverFillStop = false;
+  $("coverFillStop").disabled = false;
+  $("coverFillStop").textContent = t("covers.fillStop");
+  // The state from the last run is about to be replaced one file at a time;
+  // clearing it here is what keeps a stale "no cover" chip from sitting on a
+  // row that is currently being looked up.
+  coverFillStates.clear();
+  updateCoverFillUI();
+
+  try {
+    for (const e of targets) {
+      if (coverFillStop) break;
+      fill.path = e.path;
+      setCoverFillState(e.path, "running");
+      patchCoverRow(e.path);
+      try {
+        const res = await post("/api/cover/fill", { path: e.path });
+        fill.done++;
+        switch (res.state) {
+          case "applied":
+            fill.applied++;
+            // The row is out of date the moment the file is rewritten, so the
+            // thumbnail is re-fetched for this file alone; see coverBumps.
+            e.hasCover = true;
+            coverBumps.set(e.path, (coverBumps.get(e.path) || 0) + 1);
+            setCoverFillState(e.path, "applied", [res.title, res.artist].filter(Boolean).join(" · "));
+            refreshCoverRowUI(e.path);
+            break;
+          case "exists":
+            fill.skipped++;
+            e.hasCover = true;
+            setCoverFillState(e.path, "exists");
+            refreshCoverRowUI(e.path);
+            break;
+          case "review":
+            fill.review++;
+            setCoverFillState(e.path, "review", res.reason);
+            patchCoverRow(e.path);
+            break;
+          default:
+            fill.failed++;
+            setCoverFillState(e.path, "failed", res.reason);
+            patchCoverRow(e.path);
+        }
+      } catch (err) {
+        fill.done++;
+        fill.failed++;
+        setCoverFillState(e.path, "failed", err.message);
+        patchCoverRow(e.path);
+      }
+      fill.path = "";
+      updateCoverFillUI();
+    }
+  } finally {
+    fill.running = false;
+    fill.path = "";
+    updateCoverFillUI();
+    renderCovers();
+    const n = coverFillTargets().length;
+    if (coverFillStop) toast(t("covers.fillStopped", { n: n }));
+    else if (fill.applied) toast(t("covers.fillToast", { n: fill.applied }));
+  }
+}
+
+function stopCoverFill() {
+  coverFillStop = true;
+  $("coverFillStop").disabled = true;
+  // Between two files the loop notices on its own; while a request is in
+  // flight the button says so rather than pretending to have stopped. It is
+  // put back by the next run, which re-enables it.
+  $("coverFillStop").textContent = t("covers.fillStopping");
+}
+
+// refreshCoverRow repaints one row of the cover list after that file's artwork
+// changed. Only that row: the list can hold hundreds of files, and re-scanning
+// to draw one new thumbnail would re-read every tag in the folder.
+//
+// The list may not be showing the file at all — the editor is also opened from
+// the convert tab, whose rows carry their own button — and then there is
+// nothing to do, which is why this is not an error path.
+function refreshCoverRow(path) {
+  // The version is bumped whatever happens next, so a row that is drawn later
+  // — after a re-scan, or after the filter is cleared — asks for the new
+  // picture rather than the one the browser already has.
+  coverBumps.set(path, (coverBumps.get(path) || 0) + 1);
+  if (!cover.data) return;
+  refreshCoverRowUI(path);
+}
+
+// refreshCoverRowUI repaints the row itself, leaving the version alone: it is
+// called from the bump above and from the paths that redraw a whole row.
+function refreshCoverRowUI(path) {
+  const e = C.items.find((it) => it.path === path);
+  if (!e) return;
+  // The row's own facts come from the manifest the editor just fetched, so the
+  // list and the dialog cannot disagree about whether the file has artwork.
+  if (cover.data && cover.path === path) e.hasCover = !!cover.data.hasCover;
+  const current = C.rows.get(path);
+  const next = buildCoverRow(e);
+  if (current && current.parentNode) current.replaceWith(next);
+  C.rows.set(path, next);
 }
 
 async function stopLyrics() {
@@ -5782,8 +6033,26 @@ $("coverFilter").addEventListener("input", () => {
   C.q = $("coverFilter").value;
   renderCovers();
 });
+$("coverFillBtn").addEventListener("click", fillCovers);
+$("coverFillStop").addEventListener("click", stopCoverFill);
 
 /* ── Cover editor ───────────────────────────────────────────────────────── */
+// coverBumps is how many times this page has seen each file's artwork change.
+//
+// It exists because the list's thumbnails are <img> tags pointing at a URL that
+// does not change when the artwork does: "/api/cover/image?path=…&id=current"
+// is the same string before and after an edit, so the browser answers it from
+// cache — for an hour — and the row keeps showing the old picture while the
+// dialog beside it shows the new one. Adding this counter to the query makes
+// each edit a different URL for that one file, and leaves every other row
+// exactly as it was: nothing is re-fetched that did not change.
+const coverBumps = new Map();
+
+function coverThumbURL(path) {
+  const n = coverBumps.get(path) || 0;
+  return "/api/cover/image?path=" + encodeURIComponent(path) + "&id=current&v=" + n;
+}
+
 const cover = {
   path: "",
   data: null,
@@ -5825,6 +6094,9 @@ const cover = {
 
   render() {
     const m = this.data;
+    // Nothing loaded yet. Every repaint of the page goes through here — a
+    // language change, a tab switch — and the dialog can be open with its
+    // request still in flight, which is exactly when there is nothing to draw.
     if (!m) return;
 
     if (m.hasCover) {
@@ -5953,6 +6225,11 @@ const cover = {
       this.data = await call();
       this.version++;
       this.render();
+      // The file itself is rewritten by now, so its row in the list is out of
+      // date whether or not the request went on to report success. Repainting
+      // that one row is what makes the change visible where the user made it,
+      // without touching any other row.
+      refreshCoverRow(this.path);
       if (okMsg) toast(okMsg);
       return true;
     } catch (err) {
@@ -6005,6 +6282,12 @@ const cover = {
 };
 
 $("coverClose").addEventListener("click", () => $("cover").close());
+// The dialog can be closed while a request is still in flight — the busy state
+// does not freeze the window — so the row is repainted once more when it goes
+// away, from whatever the last answer was.
+$("cover").addEventListener("close", () => {
+  if (cover.data) refreshCoverRow(cover.path);
+});
 $("coverUpload").addEventListener("click", () => $("coverFile").click());
 $("coverFile").addEventListener("change", () => {
   const file = $("coverFile").files && $("coverFile").files[0];
